@@ -5,7 +5,7 @@ Production-oriented ESP32 DevKit V1 firmware for configuring an attendance sessi
 ## Runtime flow
 
 1. On first boot, the device creates a public device ID and a random 256-bit device secret in ESP32 NVS.
-2. With no valid active session, it advertises a connectable `PresenSure-PS-...` configuration peripheral.
+2. With no valid active session, it advertises a connectable room-based name such as `PresenSure-ROOM1`.
 3. The instructor app pairs, reads Device Information, and writes a signed JSON configuration.
 4. The ESP32 validates the fields and HMAC, persists the session, disconnects, and switches to non-connectable attendance advertising.
 5. The advertised verification token changes every 30 seconds.
@@ -88,3 +88,5 @@ pio device monitor
 ```
 
 Serial logging runs at 115200 baud. Build output is written to `.pio/build/esp32dev/firmware.bin`.
+
+The public BLE room name is configured through `ROOM_NUMBER` in `include/Constants.h`. For example, changing it to `"RLO-202"` produces the BLE name `PresenSure-RLO-202`. The unique device ID remains available through the Device Information characteristic.

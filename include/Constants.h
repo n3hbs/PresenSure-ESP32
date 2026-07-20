@@ -5,6 +5,8 @@
 namespace Constants {
 
 constexpr char DEVICE_NAME_PREFIX[] = "PresenSure-";
+// Change this value to the room assigned to this beacon, for example "RLO-202".
+constexpr char ROOM_NUMBER[] = "RFL201";
 constexpr char NVS_NAMESPACE[] = "presensure";
 
 // PresenSure custom BLE service and characteristic UUIDs.
@@ -32,4 +34,3 @@ constexpr size_t DEVICE_SECRET_BYTES = 32;
 constexpr size_t SIGNATURE_HEX_LENGTH = 64;
 
 }  // namespace Constants
-

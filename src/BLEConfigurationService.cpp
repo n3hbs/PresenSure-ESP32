@@ -51,7 +51,7 @@ BLEConfigurationService::BLEConfigurationService(SessionManager& sessions, const
     : sessions_(sessions), storage_(storage) {}
 
 StatusCode BLEConfigurationService::begin() {
-  String deviceName = Constants::DEVICE_NAME_PREFIX + storage_.deviceId();
+  const String deviceName = String(Constants::DEVICE_NAME_PREFIX) + Constants::ROOM_NUMBER;
   if (!NimBLEDevice::init(deviceName.c_str())) return StatusCode::BLE_INITIALIZATION_FAILURE;
   NimBLEDevice::setSecurityAuth(true, false, true);
   NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
@@ -143,7 +143,8 @@ bool BLEConfigurationService::startConfigurationAdvertising() {
   advertisement.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
   advertisement.setCompleteServices(NimBLEUUID(Constants::SERVICE_UUID));
   NimBLEAdvertisementData scanResponse;
-  scanResponse.setName((Constants::DEVICE_NAME_PREFIX + storage_.deviceId()).c_str());
+  const String deviceName = String(Constants::DEVICE_NAME_PREFIX) + Constants::ROOM_NUMBER;
+  scanResponse.setName(deviceName.c_str());
   if (!advertising->setAdvertisementData(advertisement) ||
       !advertising->setScanResponseData(scanResponse)) {
     return false;
