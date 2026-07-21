@@ -57,16 +57,8 @@ void setup() {
     return;
   }
 
-  const StatusCode restoreResult = sessionManager.restore();
-  if (restoreResult == StatusCode::OK && sessionManager.isActive()) {
-    Log::info("Restored active session");
-    enterAttendanceMode();
-  } else {
-    if (restoreResult != StatusCode::NO_ACTIVE_SESSION) {
-      Log::warning("Session not resumed: %s", AppConfig::statusText(restoreResult));
-    }
-    enterConfigurationMode();
-  }
+  // Attendance sessions are temporary and intentionally never restored from NVS.
+  enterConfigurationMode();
   initialized = true;
 }
 
@@ -77,7 +69,10 @@ void loop() {
   }
 
   configurationService.update();
-  if (sessionManager.isActive() && !advertisingManager.isAdvertising()) {
+  // Keep GATT connected until React Native receives the status notification and
+  // disconnects. Starting attendance advertising earlier races Android's CCCD write.
+  if (sessionManager.isActive() && !advertisingManager.isAdvertising() &&
+      !configurationService.hasConnectedClients()) {
     enterAttendanceMode();
   } else if (!sessionManager.isActive() && advertisingManager.isAdvertising()) {
     enterConfigurationMode();
@@ -88,7 +83,7 @@ void loop() {
     lastMaintenanceMs = nowMs;
     if (sessionManager.isActive()) {
       const StatusCode sessionResult = sessionManager.update();
-      if (sessionResult == StatusCode::EXPIRED_SESSION) {
+      if (sessionResult == StatusCode::SESSION_EXPIRED) {
         Log::info("Session expired");
         configurationService.publishStatus(sessionResult, false);
         enterConfigurationMode();

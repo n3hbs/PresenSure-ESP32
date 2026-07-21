@@ -1,92 +1,114 @@
 # PresenSure ESP32 Attendance Beacon
 
-Production-oriented ESP32 DevKit V1 firmware for configuring an attendance session over BLE GATT and then broadcasting compact, rotating attendance advertisements. The beacon never contacts the Laravel API.
+ESP32 DevKit V1 firmware for the PresenSure BLE attendance flow. Laravel owns the
+official attendance session, React Native transfers it, and the ESP32 broadcasts
+only a temporary attendance proof.
 
-## Runtime flow
+## Device data
 
-1. On first boot, the device creates a public device ID and a random 256-bit device secret in ESP32 NVS.
-2. With no valid active session, it advertises a connectable room-based name such as `PresenSure-ROOM1`.
-3. The instructor app pairs, reads Device Information, and writes a signed JSON configuration.
-4. The ESP32 validates the fields and HMAC, persists the session, disconnects, and switches to non-connectable attendance advertising.
-5. The advertised verification token changes every 30 seconds.
-6. A stop command or session expiry clears the saved active session and returns the device to configuration mode.
+Permanent NVS data:
+
+- `device_id`
+- `device_name`
+- `room_id`
+- `device_secret`
+- `provisioned`
+
+`device_secret` is used internally for signature verification and is never exposed
+over GATT, advertised, or printed. The initial room assignment is configured with
+`DEFAULT_ROOM_ID` and `DEFAULT_ROOM_NAME` in `include/Constants.h`.
+
+Temporary session data stays in RAM and is cleared on stop, expiry, or reboot:
+
+- `session_id`
+- `session_code`
+- `token`
+- `attendance_mode`
+- `continuous_checking`
+- `issued_at`
+- `expires_at`
+- `signature`
+- active state
 
 ## GATT contract
 
-All UUIDs are centralized in `include/Constants.h`. Configuration, start, and stop writes require an encrypted BLE connection. Application-level HMAC validation is still mandatory.
+All UUIDs are in `include/Constants.h`. Session and control writes require an
+encrypted BLE connection.
 
 | Characteristic | Access | Value |
 |---|---|---|
-| Device Information | Read | Public JSON device metadata |
-| Configuration | Encrypted write | Signed configuration JSON |
-| Start Advertising | Encrypted write | Any value triggers start |
-| Stop Advertising | Encrypted write | Any value triggers stop |
-| Device Status | Read, notify | JSON status code and state |
-| Battery Level | Read | `0xFF` until implemented |
-| Heartbeat | Read | Reserved for future use |
+| Device Information | Read | Public device JSON |
+| Session Command | Encrypted write with response | `START_SESSION` JSON |
+| Session Status | Read, notify | Command result JSON |
+| Control | Encrypted write | `STOP_SESSION`, `GET_STATUS`, or `CLEAR_SESSION` JSON |
 
-Configuration JSON:
+Device Information returns:
 
 ```json
 {
-  "session_id": "attendance-session-uuid",
-  "attendance_type": 1,
-  "start_time": 1784422800,
-  "end_time": 1784426400,
-  "continuous": true,
-  "rotating_secret": "per-session-random-value",
-  "signature": "64-lowercase-hex-HMAC-SHA256",
-  "advertisement_interval_ms": 500
+  "device_id": "PS-1234ABCD",
+  "device_name": "PresenSure-Room-301",
+  "room_id": 12,
+  "provisioned": true,
+  "device_status": "ready"
 }
 ```
 
-Attendance types are `1 = BLE`, `2 = FACE`, and `3 = BOTH`. The advertisement interval must be from 100 to 5000 milliseconds.
+Session Command accepts the required Laravel session proof plus optional settings:
 
-The signature is lowercase hex HMAC-SHA256 using the device's raw 32-byte secret. The signed UTF-8 string has this exact order and separator:
-
-```text
-session_id|attendance_type|start_time|end_time|continuous_as_0_or_1|rotating_secret|advertisement_interval_ms
+```json
+{
+  "command": "START_SESSION",
+  "session_id": "ATT-20260721-0001",
+  "session_code": "A71F32",
+  "token": "X8A3K92M",
+  "attendance_mode": "ble_and_face",
+  "continuous_checking": true,
+  "issued_at": 1784592600,
+  "expires_at": 1784596200,
+  "signature": "64-lowercase-hex-HMAC-SHA256"
+}
 ```
 
-The device secret must be securely provisioned into the Laravel device registry during manufacturing/enrollment. It is intentionally never returned by GATT, included in advertisements, or printed to Serial.
+Minimum required fields are `command`, `session_id`, `token`, `expires_at`, and
+`signature`. The signed UTF-8 value is:
 
-## Attendance advertisement
+```text
+command|session_id|session_code|token|attendance_mode|continuous_as_0_or_1|issued_at|expires_at
+```
 
-The manufacturer-specific payload is 23 bytes, including the temporary development manufacturer ID. Multi-byte integers are little-endian.
+The signature is lowercase HMAC-SHA256 hex using the device's raw 32-byte secret.
+
+Stop a session with:
+
+```json
+{"command":"STOP_SESSION","session_id":"ATT-20260721-0001"}
+```
+
+## Student advertisement
+
+The firmware sends a 23-byte manufacturer payload instead of JSON:
 
 | Offset | Bytes | Field |
 |---:|---:|---|
-| 0 | 2 | Manufacturer ID (`0xFFFF`, replace after assignment) |
+| 0 | 2 | Manufacturer ID |
 | 2 | 1 | Protocol version |
-| 3 | 1 | Attendance type |
+| 3 | 1 | Attendance flags |
 | 4 | 1 | Advertisement version |
-| 5 | 4 | First four bytes of SHA-256(session ID) |
-| 9 | 4 | Unix time window (`epoch / 30`) |
-| 13 | 6 | First six bytes of verification HMAC |
-| 19 | 4 | First four bytes of SHA-256(device ID) |
+| 5 | 4 | Session short ID |
+| 9 | 4 | Time window (`epoch / 30`) |
+| 13 | 6 | Rotating verification token |
+| 19 | 4 | Device short ID |
 
-The token input is the lowercase session-hash hex, attendance type, and decimal time window joined by `|`:
+Flags use bit 0 for BLE, bit 1 for face verification, and bit 2 for continuous
+checking. The rotating proof is HMAC-SHA256 over `token|time_window`, truncated to
+six bytes. Student, instructor, course, room-name, Laravel-token, and device-secret
+data are never advertised.
 
-```text
-hex_session_hash|attendance_type|time_window
-```
-
-The token is HMAC-SHA256 of that string using the raw device secret, truncated to six bytes.
-
-## Clock limitation
-
-This design has no Wi-Fi time synchronization or battery-backed RTC. When a new session arrives and the system clock is unset, firmware anchors Unix time to `start_time`, which assumes configuration occurs at session start. After total power loss, a saved session is not resumed unless the ESP32 clock remains valid. A future production revision should add a signed `current_time` field, NTP, or an external RTC.
-
-## Build and upload
-
-The environment is configured for a DOIT ESP32 DevKit V1 on `COM3`:
+## Build
 
 ```powershell
 pio run
 pio run --target upload
 pio device monitor
 ```
-
-Serial logging runs at 115200 baud. Build output is written to `.pio/build/esp32dev/firmware.bin`.
-
-The public BLE room name is configured through `ROOM_NUMBER` in `include/Constants.h`. For example, changing it to `"RLO-202"` produces the BLE name `PresenSure-RLO-202`. The unique device ID remains available through the Device Information characteristic.

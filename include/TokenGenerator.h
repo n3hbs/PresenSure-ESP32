@@ -24,10 +24,9 @@ class TokenGenerator {
   DeviceHash deviceHash(const String& deviceId) const;
 
   /** Generates a truncated HMAC token for the supplied 30-second time window. */
-  VerificationToken token(const SessionHash& sessionHash, AttendanceType type, uint32_t timeWindow,
+  VerificationToken token(const String& sessionToken, uint32_t timeWindow,
                           const String& deviceSecret) const;
 
  private:
   const SecurityManager& security_;
 };
-

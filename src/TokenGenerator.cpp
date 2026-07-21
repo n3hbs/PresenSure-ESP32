@@ -18,11 +18,9 @@ DeviceHash TokenGenerator::deviceHash(const String& deviceId) const {
   return output;
 }
 
-VerificationToken TokenGenerator::token(const SessionHash& sessionHashValue, const AttendanceType type,
-                                        const uint32_t timeWindow, const String& deviceSecret) const {
-  String message = SecurityManager::toHex(sessionHashValue.data(), sessionHashValue.size());
-  message += '|';
-  message += String(static_cast<uint8_t>(type));
+VerificationToken TokenGenerator::token(const String& sessionToken, const uint32_t timeWindow,
+                                        const String& deviceSecret) const {
+  String message = sessionToken;
   message += '|';
   message += String(timeWindow);
   const Sha256Digest hmac = security_.hmacSha256(message, deviceSecret);
@@ -30,4 +28,3 @@ VerificationToken TokenGenerator::token(const SessionHash& sessionHashValue, con
   std::copy_n(hmac.begin(), output.size(), output.begin());
   return output;
 }
-

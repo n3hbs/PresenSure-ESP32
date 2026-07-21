@@ -9,20 +9,8 @@
 SessionManager::SessionManager(StorageManager& storage, const SecurityManager& security)
     : storage_(storage), security_(security) {}
 
-StatusCode SessionManager::restore() {
-  SessionConfiguration restored;
-  if (!storage_.loadSession(restored)) return StatusCode::NO_ACTIVE_SESSION;
-  if (!security_.validateSessionSignature(restored, storage_.deviceSecret())) {
-    storage_.clearSession();
-    return StatusCode::INVALID_SIGNATURE;
-  }
-  current_ = restored;
-  hasSession_ = true;
-  if (!clockIsValid()) return StatusCode::CLOCK_NOT_SET;
-  return start();
-}
-
 StatusCode SessionManager::configure(const SessionConfiguration& config) {
+  if (active_) return current_.sessionId == config.sessionId ? StatusCode::ALREADY_ACTIVE : StatusCode::DEVICE_BUSY;
   const StatusCode validation = AppConfig::validate(config);
   if (validation != StatusCode::OK) return validation;
   if (!security_.validateSessionSignature(config, storage_.deviceSecret())) {
@@ -32,13 +20,11 @@ StatusCode SessionManager::configure(const SessionConfiguration& config) {
   hasSession_ = true;
   active_ = false;
   if (!clockIsValid()) {
-    anchorClockToSessionStart();
-    Log::warning("Clock was unset; anchored to session start time");
+    if (config.issuedAt == 0) return StatusCode::CLOCK_NOT_SET;
+    anchorClock(config.issuedAt);
+    Log::warning("Clock was unset; anchored to signed issued_at");
   }
-  if (!storage_.saveSession(current_)) {
-    hasSession_ = false;
-    return StatusCode::STORAGE_FAILURE;
-  }
+  if (currentEpoch() > current_.expiresAt) return StatusCode::SESSION_EXPIRED;
   return StatusCode::OK;
 }
 
@@ -46,12 +32,12 @@ StatusCode SessionManager::start() {
   if (!hasSession_) return StatusCode::NO_ACTIVE_SESSION;
   const uint32_t now = currentEpoch();
   if (now == 0) return StatusCode::CLOCK_NOT_SET;
-  if (now > current_.endTime) {
+  if (now > current_.expiresAt) {
     stop();
-    return StatusCode::EXPIRED_SESSION;
+    return StatusCode::SESSION_EXPIRED;
   }
-  if (now < current_.startTime) return StatusCode::INVALID_CONFIGURATION;
   active_ = true;
+  current_.active = true;
   return StatusCode::OK;
 }
 
@@ -59,7 +45,7 @@ StatusCode SessionManager::stop() {
   active_ = false;
   hasSession_ = false;
   current_ = SessionConfiguration{};
-  return storage_.clearSession() ? StatusCode::OK : StatusCode::STORAGE_FAILURE;
+  return StatusCode::OK;
 }
 
 StatusCode SessionManager::update() {
@@ -69,9 +55,9 @@ StatusCode SessionManager::update() {
     active_ = false;
     return StatusCode::CLOCK_NOT_SET;
   }
-  if (now > current_.endTime) {
+  if (now > current_.expiresAt) {
     stop();
-    return StatusCode::EXPIRED_SESSION;
+    return StatusCode::SESSION_EXPIRED;
   }
   return StatusCode::OK;
 }
@@ -93,7 +79,7 @@ uint32_t SessionManager::currentTimeWindow() const {
 
 bool SessionManager::clockIsValid() const { return currentEpoch() != 0; }
 
-void SessionManager::anchorClockToSessionStart() {
-  const timeval value{static_cast<time_t>(current_.startTime), 0};
+void SessionManager::anchorClock(const uint32_t issuedAt) {
+  const timeval value{static_cast<time_t>(issuedAt), 0};
   settimeofday(&value, nullptr);
 }

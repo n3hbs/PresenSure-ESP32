@@ -2,30 +2,32 @@
 
 #include <Arduino.h>
 
-enum class AttendanceType : uint8_t { BLE = 1, FACE = 2, BOTH = 3 };
-
 enum class StatusCode : uint8_t {
   OK = 0,
-  INVALID_CONFIGURATION,
-  EXPIRED_SESSION,
+  INVALID_PAYLOAD,
   INVALID_SIGNATURE,
-  MISSING_PARAMETERS,
-  STORAGE_FAILURE,
-  BLE_INITIALIZATION_FAILURE,
+  SESSION_EXPIRED,
+  DEVICE_BUSY,
+  ALREADY_ACTIVE,
+  STORAGE_ERROR,
+  ADVERTISEMENT_START_FAILED,
   NO_ACTIVE_SESSION,
   CLOCK_NOT_SET,
+  BLE_INITIALIZATION_FAILURE,
 };
 
 /** Values supplied by the instructor app for one attendance session. */
 struct SessionConfiguration {
+  String command;
   String sessionId;
-  AttendanceType attendanceType = AttendanceType::BLE;
-  uint32_t startTime = 0;
-  uint32_t endTime = 0;
+  String sessionCode;
+  String token;
+  String attendanceMode = "ble_and_face";
   bool continuousChecking = false;
-  String rotatingSecret;
+  uint32_t issuedAt = 0;
+  uint32_t expiresAt = 0;
   String signature;
-  uint16_t advertisementIntervalMs = 0;
+  bool active = false;
 };
 
 /** Parses, validates, and serializes session configuration data. */
@@ -34,7 +36,7 @@ class AppConfig {
   /** Parses the instructor JSON document into a configuration object. */
   static StatusCode fromJson(const String& json, SessionConfiguration& output);
 
-  /** Serializes configuration for NVS persistence. */
+  /** Serializes the temporary session state for diagnostics. */
   static String toJson(const SessionConfiguration& config);
 
   /** Validates field ranges and required values, excluding the signature. */
@@ -46,4 +48,3 @@ class AppConfig {
   /** Returns a stable text label for a firmware status. */
   static const char* statusText(StatusCode status);
 };
-

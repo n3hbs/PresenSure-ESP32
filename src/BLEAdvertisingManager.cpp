@@ -24,7 +24,7 @@ StatusCode BLEAdvertisingManager::update() {
   if (!advertising_) return StatusCode::NO_ACTIVE_SESSION;
   if (!sessions_.isActive()) {
     stop();
-    return StatusCode::EXPIRED_SESSION;
+    return StatusCode::SESSION_EXPIRED;
   }
   if (sessions_.currentTimeWindow() != advertisedWindow_ && !applyPayload()) {
     return StatusCode::BLE_INITIALIZATION_FAILURE;
@@ -47,7 +47,7 @@ bool BLEAdvertisingManager::applyPayload() {
   const uint32_t timeWindow = sessions_.currentTimeWindow();
   const auto payload = buildPayload(timeWindow);
   const uint16_t interval = static_cast<uint16_t>(
-      (static_cast<uint32_t>(sessions_.current().advertisementIntervalMs) * 8U) / 5U);
+      (static_cast<uint32_t>(Constants::DEFAULT_ADVERTISEMENT_INTERVAL_MS) * 8U) / 5U);
 
   advertising->stop();
   advertising->reset();
@@ -71,12 +71,18 @@ std::array<uint8_t, 23> BLEAdvertisingManager::buildPayload(const uint32_t timeW
   payload[0] = static_cast<uint8_t>(Constants::MANUFACTURER_ID & 0xFFU);
   payload[1] = static_cast<uint8_t>(Constants::MANUFACTURER_ID >> 8U);
   payload[2] = Constants::PROTOCOL_VERSION;
-  payload[3] = static_cast<uint8_t>(sessions_.current().attendanceType);
+  uint8_t flags = 0;
+  if (sessions_.current().attendanceMode == "ble" ||
+      sessions_.current().attendanceMode == "ble_and_face") flags |= 0x01;
+  if (sessions_.current().attendanceMode == "face" ||
+      sessions_.current().attendanceMode == "ble_and_face") flags |= 0x02;
+  if (sessions_.current().continuousChecking) flags |= 0x04;
+  payload[3] = flags;
   payload[4] = Constants::ADVERTISEMENT_VERSION;
   const SessionHash sessionHash = tokens_.sessionHash(sessions_.current().sessionId);
   std::copy(sessionHash.begin(), sessionHash.end(), payload.begin() + 5);
   appendUint32(payload, 9, timeWindow);
-  const VerificationToken token = tokens_.token(sessionHash, sessions_.current().attendanceType, timeWindow,
+  const VerificationToken token = tokens_.token(sessions_.current().token, timeWindow,
                                                  storage_.deviceSecret());
   std::copy(token.begin(), token.end(), payload.begin() + 13);
   const DeviceHash deviceHash = tokens_.deviceHash(storage_.deviceId());

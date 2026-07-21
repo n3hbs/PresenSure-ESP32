@@ -11,10 +11,7 @@ class SessionManager {
  public:
   SessionManager(StorageManager& storage, const SecurityManager& security);
 
-  /** Restores a signed, unexpired session when a reliable clock is available. */
-  StatusCode restore();
-
-  /** Validates, signs-checks, persists, and stages a new session. */
+  /** Validates, signature-checks, and stages a new session in RAM. */
   StatusCode configure(const SessionConfiguration& config);
 
   /** Activates the staged session when it is within its time range. */
@@ -43,7 +40,7 @@ class SessionManager {
 
  private:
   bool clockIsValid() const;
-  void anchorClockToSessionStart();
+  void anchorClock(uint32_t issuedAt);
 
   StorageManager& storage_;
   const SecurityManager& security_;
@@ -51,4 +48,3 @@ class SessionManager {
   bool hasSession_ = false;
   bool active_ = false;
 };
-

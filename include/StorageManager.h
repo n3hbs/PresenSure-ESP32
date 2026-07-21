@@ -17,17 +17,14 @@ class StorageManager {
   /** Returns the public device identifier. */
   const String& deviceId() const;
 
+  const String& deviceName() const;
+
+  uint32_t roomId() const;
+
+  bool provisioned() const;
+
   /** Returns the private device key for internal cryptographic use only. */
   const String& deviceSecret() const;
-
-  /** Persists a validated active session. */
-  bool saveSession(const SessionConfiguration& config);
-
-  /** Loads the last saved active session. */
-  bool loadSession(SessionConfiguration& config);
-
-  /** Removes the active session record. */
-  bool clearSession();
 
  private:
   bool provisionIdentity();
@@ -35,6 +32,9 @@ class StorageManager {
 
   Preferences preferences_;
   String deviceId_;
+  String deviceName_;
   String deviceSecret_;
+  uint32_t roomId_ = 0;
+  bool provisioned_ = false;
   bool initialized_ = false;
 };
