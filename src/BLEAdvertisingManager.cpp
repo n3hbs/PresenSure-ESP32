@@ -7,6 +7,19 @@
 #include "Constants.h"
 #include "Log.h"
 
+namespace {
+String payloadToHex(const std::array<uint8_t, 23>& payload) {
+  static constexpr char HEX_DIGITS[] = "0123456789abcdef";
+  String output;
+  output.reserve(payload.size() * 2);
+  for (const uint8_t byte : payload) {
+    output += HEX_DIGITS[byte >> 4U];
+    output += HEX_DIGITS[byte & 0x0FU];
+  }
+  return output;
+}
+}  // namespace
+
 BLEAdvertisingManager::BLEAdvertisingManager(SessionManager& sessions, const StorageManager& storage,
                                              const TokenGenerator& tokens)
     : sessions_(sessions), storage_(storage), tokens_(tokens) {}
@@ -26,7 +39,10 @@ StatusCode BLEAdvertisingManager::update() {
     stop();
     return StatusCode::SESSION_EXPIRED;
   }
-  if (sessions_.currentTimeWindow() != advertisedWindow_ && !applyPayload()) {
+  NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
+  if ((advertising == nullptr || !advertising->isAdvertising() ||
+       sessions_.currentTimeWindow() != advertisedWindow_) &&
+      !applyPayload()) {
     return StatusCode::BLE_INITIALIZATION_FAILURE;
   }
   return StatusCode::OK;
@@ -51,18 +67,30 @@ bool BLEAdvertisingManager::applyPayload() {
 
   advertising->stop();
   advertising->reset();
-  advertising->setConnectableMode(BLE_GAP_CONN_MODE_NON);
-  advertising->enableScanResponse(false);
+  advertising->setConnectableMode(BLE_GAP_CONN_MODE_UND);
+  advertising->enableScanResponse(true);
   advertising->setMinInterval(interval);
   advertising->setMaxInterval(interval);
   NimBLEAdvertisementData data;
   data.setFlags(BLE_HS_ADV_F_BREDR_UNSUP);
+  NimBLEAdvertisementData scanResponse;
+  scanResponse.setCompleteServices(NimBLEUUID(Constants::SERVICE_UUID));
   if (!data.setManufacturerData(payload.data(), payload.size()) ||
-      !advertising->setAdvertisementData(data) || !advertising->start()) {
+      !advertising->setAdvertisementData(data) ||
+      !advertising->setScanResponseData(scanResponse) || !advertising->start()) {
     return false;
   }
   advertisedWindow_ = timeWindow;
-  Log::debug("Advertisement token rotated for window %lu", static_cast<unsigned long>(timeWindow));
+  const String payloadHex = payloadToHex(payload);
+  const SessionConfiguration& session = sessions_.current();
+  Log::info("Attendance payload is advertising:");
+  Log::info("  session_id=%s schedule_id=%lu subject_code=%s room_code=%s",
+            session.sessionId.c_str(), static_cast<unsigned long>(session.scheduleId),
+            session.subjectCode.c_str(), session.roomCode.c_str());
+  Log::info("  time_window=%lu flags=0x%02x bytes=%u",
+            static_cast<unsigned long>(timeWindow), payload[3],
+            static_cast<unsigned>(payload.size()));
+  Log::info("  manufacturer_payload_hex=%s", payloadHex.c_str());
   return true;
 }
 

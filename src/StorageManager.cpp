@@ -12,6 +12,7 @@ namespace
   constexpr char DEVICE_SECRET_KEY[] = "device_key";
   constexpr char DEVICE_NAME_KEY[] = "device_name";
   constexpr char ROOM_ID_KEY[] = "room_id";
+  constexpr char ROOM_CODE_KEY[] = "room_code";
   constexpr char PROVISIONED_KEY[] = "provisioned";
 }
 
@@ -41,6 +42,8 @@ const String &StorageManager::deviceName() const { return deviceName_; }
 
 uint32_t StorageManager::roomId() const { return roomId_; }
 
+const String &StorageManager::roomCode() const { return roomCode_; }
+
 bool StorageManager::provisioned() const { return provisioned_; }
 
 const String &StorageManager::deviceSecret() const { return deviceSecret_; }
@@ -51,13 +54,14 @@ bool StorageManager::provisionIdentity()
   deviceSecret_ = preferences_.getString(DEVICE_SECRET_KEY, "");
   deviceName_ = preferences_.getString(DEVICE_NAME_KEY, "");
   roomId_ = preferences_.getUInt(ROOM_ID_KEY, 0);
+  roomCode_ = preferences_.getString(ROOM_CODE_KEY, "");
   provisioned_ = preferences_.getBool(PROVISIONED_KEY, false);
   if (!deviceId_.isEmpty() && !deviceName_.isEmpty() && roomId_ != 0 &&
       deviceSecret_.length() == Constants::DEVICE_SECRET_BYTES * 2 && provisioned_)
   {
 
     const String configuredName =
-        String(Constants::DEVICE_NAME_PREFIX) + Constants::DEFAULT_ROOM_NAME;
+        String(Constants::DEVICE_NAME_PREFIX) + Constants::DEFAULT_ROOM_CODE;
 
     if (roomId_ != Constants::DEFAULT_ROOM_ID)
     {
@@ -71,6 +75,12 @@ bool StorageManager::provisionIdentity()
       preferences_.putString(DEVICE_NAME_KEY, deviceName_);
     }
 
+    if (roomCode_ != Constants::DEFAULT_ROOM_CODE)
+    {
+      roomCode_ = Constants::DEFAULT_ROOM_CODE;
+      preferences_.putString(ROOM_CODE_KEY, roomCode_);
+    }
+
     return true;
   }
 
@@ -78,7 +88,8 @@ bool StorageManager::provisionIdentity()
   char identifier[24];
   snprintf(identifier, sizeof(identifier), "PS-%08lX", static_cast<unsigned long>(chipId & 0xFFFFFFFFULL));
   deviceId_ = identifier;
-  deviceName_ = String(Constants::DEVICE_NAME_PREFIX) + Constants::DEFAULT_ROOM_NAME;
+  deviceName_ = String(Constants::DEVICE_NAME_PREFIX) + Constants::DEFAULT_ROOM_CODE;
+  roomCode_ = Constants::DEFAULT_ROOM_CODE;
   roomId_ = Constants::DEFAULT_ROOM_ID;
   deviceSecret_ = randomHex(Constants::DEVICE_SECRET_BYTES);
 
@@ -86,8 +97,9 @@ bool StorageManager::provisionIdentity()
   const bool secretSaved = preferences_.putString(DEVICE_SECRET_KEY, deviceSecret_) == deviceSecret_.length();
   const bool nameSaved = preferences_.putString(DEVICE_NAME_KEY, deviceName_) == deviceName_.length();
   const bool roomSaved = preferences_.putUInt(ROOM_ID_KEY, roomId_) > 0;
+  const bool roomCodeSaved = preferences_.putString(ROOM_CODE_KEY, roomCode_) == roomCode_.length();
   const bool provisionedSaved = preferences_.putBool(PROVISIONED_KEY, true) > 0;
-  if (!idSaved || !secretSaved || !nameSaved || !roomSaved || !provisionedSaved)
+  if (!idSaved || !secretSaved || !nameSaved || !roomSaved || !roomCodeSaved || !provisionedSaved)
   {
     Log::error("Device identity provisioning failed");
     return false;

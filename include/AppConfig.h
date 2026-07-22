@@ -5,10 +5,13 @@
 enum class StatusCode : uint8_t {
   OK = 0,
   INVALID_PAYLOAD,
-  INVALID_SIGNATURE,
   SESSION_EXPIRED,
   DEVICE_BUSY,
   ALREADY_ACTIVE,
+  AUTHENTICATED,
+  NOT_AUTHENTICATED,
+  AUTHENTICATION_FAILED,
+  ROOM_MISMATCH,
   STORAGE_ERROR,
   ADVERTISEMENT_START_FAILED,
   NO_ACTIVE_SESSION,
@@ -20,13 +23,15 @@ enum class StatusCode : uint8_t {
 struct SessionConfiguration {
   String command;
   String sessionId;
+  uint32_t scheduleId = 0;
   String sessionCode;
+  String subjectCode;
+  String roomCode;
   String token;
   String attendanceMode = "ble_and_face";
   bool continuousChecking = false;
   uint32_t issuedAt = 0;
   uint32_t expiresAt = 0;
-  String signature;
   bool active = false;
 };
 
@@ -39,11 +44,8 @@ class AppConfig {
   /** Serializes the temporary session state for diagnostics. */
   static String toJson(const SessionConfiguration& config);
 
-  /** Validates field ranges and required values, excluding the signature. */
+  /** Validates required session fields and their ranges. */
   static StatusCode validate(const SessionConfiguration& config);
-
-  /** Returns the stable byte representation covered by the HMAC signature. */
-  static String canonicalPayload(const SessionConfiguration& config);
 
   /** Returns a stable text label for a firmware status. */
   static const char* statusText(StatusCode status);

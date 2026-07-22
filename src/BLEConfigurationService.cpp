@@ -5,22 +5,22 @@
 #include "Constants.h"
 #include "Log.h"
 
-class BLEConfigurationService::SessionCommandCallbacks : public NimBLECharacteristicCallbacks {
+class BLEConfigurationService::AuthenticationCallbacks : public NimBLECharacteristicCallbacks {
  public:
-  explicit SessionCommandCallbacks(BLEConfigurationService& owner) : owner_(owner) {}
-  void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
-    owner_.queueSessionCommand(String(characteristic->getValue()));
+  explicit AuthenticationCallbacks(BLEConfigurationService& owner) : owner_(owner) {}
+  void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo& connection) override {
+    owner_.queueAuthenticationCommand(String(characteristic->getValue()), connection.getConnHandle());
   }
 
  private:
   BLEConfigurationService& owner_;
 };
 
-class BLEConfigurationService::ControlCallbacks : public NimBLECharacteristicCallbacks {
+class BLEConfigurationService::SessionCommandCallbacks : public NimBLECharacteristicCallbacks {
  public:
-  explicit ControlCallbacks(BLEConfigurationService& owner) : owner_(owner) {}
-  void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
-    owner_.queueControlCommand(String(characteristic->getValue()));
+  explicit SessionCommandCallbacks(BLEConfigurationService& owner) : owner_(owner) {}
+  void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo& connection) override {
+    owner_.queueSessionCommand(String(characteristic->getValue()), connection.getConnHandle());
   }
 
  private:
@@ -30,10 +30,12 @@ class BLEConfigurationService::ControlCallbacks : public NimBLECharacteristicCal
 class BLEConfigurationService::StatusCallbacks : public NimBLECharacteristicCallbacks {
  public:
   explicit StatusCallbacks(BLEConfigurationService& owner) : owner_(owner) {}
-  void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t subValue) override {
-    // Android may enable notifications after START_SESSION was written. Send the
-    // current state as soon as its CCCD subscription becomes active.
-    if ((subValue & 0x01U) != 0U) {
+  void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo& connection, uint16_t subValue) override {
+    if ((subValue & 0x01U) == 0U) return;
+    if (owner_.authenticatedConnectionHandle_ == connection.getConnHandle() &&
+        !owner_.sessions_.isActive()) {
+      owner_.publishStatus(StatusCode::AUTHENTICATED);
+    } else {
       owner_.publishStatus(owner_.sessions_.isActive() ? StatusCode::OK
                                                        : StatusCode::NO_ACTIVE_SESSION);
     }
@@ -47,8 +49,9 @@ class BLEConfigurationService::ServerCallbacks : public NimBLEServerCallbacks {
  public:
   explicit ServerCallbacks(BLEConfigurationService& owner) : owner_(owner) {}
   void onConnect(NimBLEServer*, NimBLEConnInfo&) override { Log::info("Instructor connected"); }
-  void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
+  void onDisconnect(NimBLEServer*, NimBLEConnInfo& connection, int reason) override {
     Log::info("Instructor disconnected (reason %d)", reason);
+    owner_.handleDisconnect(connection.getConnHandle());
     if (!owner_.sessions_.isActive()) owner_.startConfigurationAdvertising();
   }
 
@@ -56,13 +59,14 @@ class BLEConfigurationService::ServerCallbacks : public NimBLEServerCallbacks {
   BLEConfigurationService& owner_;
 };
 
-BLEConfigurationService::BLEConfigurationService(SessionManager& sessions, const StorageManager& storage)
+BLEConfigurationService::BLEConfigurationService(SessionManager& sessions,
+                                                 const StorageManager& storage)
     : sessions_(sessions), storage_(storage) {}
 
 StatusCode BLEConfigurationService::begin() {
-  if (!NimBLEDevice::init(storage_.deviceName().c_str())) return StatusCode::BLE_INITIALIZATION_FAILURE;
-  NimBLEDevice::setSecurityAuth(true, false, true);
-  NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
+  if (!NimBLEDevice::init(storage_.deviceName().c_str())) {
+    return StatusCode::BLE_INITIALIZATION_FAILURE;
+  }
 
   server_ = NimBLEDevice::createServer();
   if (server_ == nullptr) return StatusCode::BLE_INITIALIZATION_FAILURE;
@@ -72,61 +76,100 @@ StatusCode BLEConfigurationService::begin() {
   NimBLEService* service = server_->createService(Constants::SERVICE_UUID);
   if (service == nullptr) return StatusCode::BLE_INITIALIZATION_FAILURE;
 
-  NimBLECharacteristic* deviceInfo =
-      service->createCharacteristic(Constants::DEVICE_INFO_UUID, NIMBLE_PROPERTY::READ, 256);
+  NimBLECharacteristic* authentication = service->createCharacteristic(
+      Constants::AUTH_CHARACTERISTIC_UUID, NIMBLE_PROPERTY::WRITE, 256);
   NimBLECharacteristic* sessionCommand = service->createCharacteristic(
-      Constants::SESSION_COMMAND_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC, 512);
+      Constants::SESSION_CHARACTERISTIC_UUID, NIMBLE_PROPERTY::WRITE, 512);
   statusCharacteristic_ = service->createCharacteristic(
-      Constants::STATUS_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY, 256);
-  NimBLECharacteristic* control = service->createCharacteristic(
-      Constants::CONTROL_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC, 256);
+      Constants::STATUS_CHARACTERISTIC_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY, 256);
 
-  if (deviceInfo == nullptr || sessionCommand == nullptr || statusCharacteristic_ == nullptr ||
-      control == nullptr) return StatusCode::BLE_INITIALIZATION_FAILURE;
+  if (authentication == nullptr || sessionCommand == nullptr || statusCharacteristic_ == nullptr) {
+    return StatusCode::BLE_INITIALIZATION_FAILURE;
+  }
 
+  authenticationCallbacks_ = new AuthenticationCallbacks(*this);
   sessionCommandCallbacks_ = new SessionCommandCallbacks(*this);
-  controlCallbacks_ = new ControlCallbacks(*this);
   statusCallbacks_ = new StatusCallbacks(*this);
+  authentication->setCallbacks(authenticationCallbacks_);
   sessionCommand->setCallbacks(sessionCommandCallbacks_);
-  control->setCallbacks(controlCallbacks_);
   statusCharacteristic_->setCallbacks(statusCallbacks_);
 
-  deviceInfo->setValue(deviceInfoJson());
   publishStatus(StatusCode::NO_ACTIVE_SESSION, false);
   return server_->start() ? StatusCode::OK : StatusCode::BLE_INITIALIZATION_FAILURE;
 }
 
 void BLEConfigurationService::update() {
-  if (controlCommandPending_) {
-    controlCommandPending_ = false;
+  if (authenticationCommandPending_) {
+    authenticationCommandPending_ = false;
+    if (authenticatedConnectionHandle_ == pendingAuthenticationHandle_) {
+      authenticatedConnectionHandle_ = UINT16_MAX;
+      if (!sessions_.isActive()) state_ = BeaconState::Configuration;
+    }
     JsonDocument document;
-    StatusCode result = StatusCode::INVALID_PAYLOAD;
-    if (!deserializeJson(document, pendingControlCommand_)) {
+    StatusCode result = StatusCode::AUTHENTICATION_FAILED;
+    if (!deserializeJson(document, pendingAuthenticationCommand_)) {
       const String command = document["command"] | "";
-      const String sessionId = document["session_id"] | "";
-      if (command == "STOP_SESSION" && sessions_.hasSession() &&
-          sessionId == sessions_.current().sessionId) {
-        result = sessions_.stop();
-      } else if (command == "CLEAR_SESSION") {
-        result = sessions_.stop();
-      } else if (command == "GET_STATUS") {
-        result = sessions_.isActive() ? StatusCode::OK : StatusCode::NO_ACTIVE_SESSION;
+      const String secret = document["secret"] | "";
+      if (command == "AUTHENTICATE" && secret == Constants::DEVELOPMENT_SECRET) {
+        authenticatedConnectionHandle_ = pendingAuthenticationHandle_;
+        if (!sessions_.isActive()) state_ = BeaconState::Authenticated;
+        result = StatusCode::AUTHENTICATED;
       }
     }
-    pendingControlCommand_.clear();
+    pendingAuthenticationCommand_.clear();
     publishStatus(result);
-    Log::info("Control command: %s", AppConfig::statusText(result));
+    Log::info("Authentication result: %s", AppConfig::statusText(result));
   }
 
   if (sessionCommandPending_) {
     sessionCommandPending_ = false;
-    SessionConfiguration config;
-    StatusCode result = AppConfig::fromJson(pendingSessionCommand_, config);
+    StatusCode result = StatusCode::NOT_AUTHENTICATED;
+    if (pendingSessionHandle_ == authenticatedConnectionHandle_) {
+      JsonDocument document;
+      if (!deserializeJson(document, pendingSessionCommand_)) {
+        const String command = document["command"] | "";
+        if (command == "STOP_SESSION") {
+          const String sessionId = document["session_id"] | "";
+          result = sessions_.hasSession() && sessionId == sessions_.current().sessionId
+                       ? sessions_.stop()
+                       : StatusCode::NO_ACTIVE_SESSION;
+          if (result == StatusCode::OK) state_ = BeaconState::Configuration;
+        } else {
+          const String claimedDeviceId = document["device_id"] | "";
+          const String receivedSessionId = document["session_id"] | "";
+          const String receivedSubjectCode = document["subject_code"] | "";
+          const String receivedRoomCode = document["room_code"] | "";
+          const String receivedToken = document["token"] | "";
+          Log::info("START_SESSION received:");
+          Log::info("  command=%s", command.c_str());
+          Log::info("  secret=%s", document["secret"].isNull() ? "not supplied" : "[REDACTED]");
+          Log::info("  device_id=%s (actual=%s)",
+                    claimedDeviceId.isEmpty() ? "not supplied" : claimedDeviceId.c_str(),
+                    storage_.deviceId().c_str());
+          Log::info("  session_id=%s", receivedSessionId.c_str());
+          Log::info("  schedule_id=%lu",
+                    static_cast<unsigned long>(document["schedule_id"] | 0U));
+          Log::info("  subject_code=%s", receivedSubjectCode.c_str());
+          Log::info("  room_code=%s", receivedRoomCode.c_str());
+          Log::info("  token=[REDACTED] (%u bytes)",
+                    static_cast<unsigned>(receivedToken.length()));
+          Log::info("  issued_at=%lu",
+                    static_cast<unsigned long>(document["issued_at"] | 0U));
+          Log::info("  expires_at=%lu",
+                    static_cast<unsigned long>(document["expires_at"] | 0U));
+          SessionConfiguration config;
+          result = AppConfig::fromJson(pendingSessionCommand_, config);
+          if (result == StatusCode::OK) result = sessions_.configure(config);
+          if (result == StatusCode::OK) result = sessions_.start();
+          if (result == StatusCode::OK) state_ = BeaconState::SessionActive;
+        }
+      } else {
+        result = StatusCode::INVALID_PAYLOAD;
+      }
+    }
     pendingSessionCommand_.clear();
-    if (result == StatusCode::OK) result = sessions_.configure(config);
-    if (result == StatusCode::OK) result = sessions_.start();
     publishStatus(result);
-    Log::info("START_SESSION result: %s", AppConfig::statusText(result));
+    Log::info("Session command result: %s", AppConfig::statusText(result));
   }
 }
 
@@ -143,11 +186,12 @@ bool BLEConfigurationService::startConfigurationAdvertising() {
   NimBLEAdvertisementData advertisement;
   advertisement.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
   advertisement.setCompleteServices(NimBLEUUID(Constants::SERVICE_UUID));
+  advertisement.setManufacturerData(storage_.roomCode().c_str());
   NimBLEAdvertisementData scanResponse;
   scanResponse.setName(storage_.deviceName().c_str());
   if (!advertising->setAdvertisementData(advertisement) ||
       !advertising->setScanResponseData(scanResponse)) return false;
-  Log::info("Configuration advertising started");
+  Log::info("Configuration advertising started for room %s", storage_.roomCode().c_str());
   return advertising->start();
 }
 
@@ -171,44 +215,53 @@ bool BLEConfigurationService::hasConnectedClients() const {
 void BLEConfigurationService::publishStatus(const StatusCode status, const bool notify) {
   if (statusCharacteristic_ == nullptr) return;
   statusCharacteristic_->setValue(statusJson(status));
-  if (notify && server_ != nullptr && server_->getConnectedCount() > 0) statusCharacteristic_->notify();
+  if (notify && server_ != nullptr && server_->getConnectedCount() > 0) {
+    statusCharacteristic_->notify();
+  }
 }
 
-void BLEConfigurationService::queueSessionCommand(const String& json) {
+void BLEConfigurationService::queueAuthenticationCommand(const String& json,
+                                                         const uint16_t connectionHandle) {
+  pendingAuthenticationCommand_ = json;
+  pendingAuthenticationHandle_ = connectionHandle;
+  authenticationCommandPending_ = true;
+}
+
+void BLEConfigurationService::queueSessionCommand(const String& json,
+                                                  const uint16_t connectionHandle) {
   pendingSessionCommand_ = json;
+  pendingSessionHandle_ = connectionHandle;
   sessionCommandPending_ = true;
 }
 
-void BLEConfigurationService::queueControlCommand(const String& json) {
-  pendingControlCommand_ = json;
-  controlCommandPending_ = true;
-}
-
-String BLEConfigurationService::deviceInfoJson() const {
-  JsonDocument document;
-  document["device_id"] = storage_.deviceId();
-  document["device_name"] = storage_.deviceName();
-  document["room_id"] = storage_.roomId();
-  document["provisioned"] = storage_.provisioned();
-  document["device_status"] = sessions_.isActive() ? "busy" : "ready";
-  String json;
-  serializeJson(document, json);
-  return json;
+void BLEConfigurationService::handleDisconnect(const uint16_t connectionHandle) {
+  if (authenticatedConnectionHandle_ == connectionHandle) {
+    authenticatedConnectionHandle_ = UINT16_MAX;
+  }
+  state_ = sessions_.isActive() ? BeaconState::SessionActive : BeaconState::Configuration;
 }
 
 String BLEConfigurationService::statusJson(const StatusCode status) const {
   JsonDocument document;
-  document["success"] = status == StatusCode::OK;
-  document["command"] = sessions_.hasSession() ? "START_SESSION" : "STOP_SESSION";
-  if (sessions_.hasSession()) document["session_id"] = sessions_.current().sessionId;
-  document["device_id"] = storage_.deviceId();
-  document["advertising"] = sessions_.isActive();
-  if (sessions_.isActive()) document["started_at"] = sessions_.currentEpoch();
-  if (status == StatusCode::OK) {
-    document["error_code"] = nullptr;
+  const bool success = status == StatusCode::OK || status == StatusCode::AUTHENTICATED;
+  if (status == StatusCode::AUTHENTICATED) {
+    document["status"] = "AUTHENTICATED";
+  } else if (status == StatusCode::OK && sessions_.isActive()) {
+    document["status"] = "SESSION_STARTED";
+  } else if (status == StatusCode::OK) {
+    document["status"] = "SESSION_STOPPED";
+  } else if (status == StatusCode::NO_ACTIVE_SESSION) {
+    document["status"] = "READY";
   } else {
-    document["error_code"] = AppConfig::statusText(status);
-    document["message"] = String("Session command failed: ") + AppConfig::statusText(status);
+    document["status"] = "ERROR";
+  }
+  document["success"] = success;
+  document["device_id"] = storage_.deviceId();
+  document["room_code"] = storage_.roomCode();
+  if (sessions_.hasSession()) document["session_id"] = sessions_.current().sessionId;
+  if (!success && status != StatusCode::NO_ACTIVE_SESSION) {
+    document["code"] = AppConfig::statusText(status);
+    document["message"] = String("BLE command failed: ") + AppConfig::statusText(status);
   }
   String json;
   serializeJson(document, json);

@@ -6,25 +6,22 @@
 #include "Constants.h"
 #include "Log.h"
 
-SessionManager::SessionManager(StorageManager& storage, const SecurityManager& security)
-    : storage_(storage), security_(security) {}
+SessionManager::SessionManager(StorageManager& storage) : storage_(storage) {}
 
 StatusCode SessionManager::configure(const SessionConfiguration& config) {
   if (active_) return current_.sessionId == config.sessionId ? StatusCode::ALREADY_ACTIVE : StatusCode::DEVICE_BUSY;
   const StatusCode validation = AppConfig::validate(config);
   if (validation != StatusCode::OK) return validation;
-  if (!security_.validateSessionSignature(config, storage_.deviceSecret())) {
-    return StatusCode::INVALID_SIGNATURE;
-  }
-  current_ = config;
-  hasSession_ = true;
-  active_ = false;
+  if (config.roomCode != storage_.roomCode()) return StatusCode::ROOM_MISMATCH;
   if (!clockIsValid()) {
     if (config.issuedAt == 0) return StatusCode::CLOCK_NOT_SET;
     anchorClock(config.issuedAt);
-    Log::warning("Clock was unset; anchored to signed issued_at");
+    Log::warning("Clock was unset; anchored to phone-supplied issued_at");
   }
-  if (currentEpoch() > current_.expiresAt) return StatusCode::SESSION_EXPIRED;
+  if (currentEpoch() > config.expiresAt) return StatusCode::SESSION_EXPIRED;
+  current_ = config;
+  hasSession_ = true;
+  active_ = false;
   return StatusCode::OK;
 }
 

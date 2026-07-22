@@ -13,7 +13,7 @@ class BLEAdvertisingManager {
   BLEAdvertisingManager(SessionManager& sessions, const StorageManager& storage,
                         const TokenGenerator& tokens);
 
-  /** Starts non-connectable attendance advertising for the active session. */
+  /** Starts connectable attendance advertising for the active session. */
   StatusCode start();
 
   /** Refreshes the payload whenever the 30-second window changes. */
@@ -36,4 +36,3 @@ class BLEAdvertisingManager {
   uint32_t advertisedWindow_ = UINT32_MAX;
   bool advertising_ = false;
 };
-

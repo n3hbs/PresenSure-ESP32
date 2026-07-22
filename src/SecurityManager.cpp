@@ -27,12 +27,6 @@ Sha256Digest SecurityManager::hmacSha256(const String& message, const String& se
   return digest;
 }
 
-bool SecurityManager::validateSessionSignature(const SessionConfiguration& config,
-                                               const String& secretHex) const {
-  const Sha256Digest expected = hmacSha256(AppConfig::canonicalPayload(config), secretHex);
-  return constantTimeEquals(toHex(expected.data(), expected.size()), config.signature);
-}
-
 String SecurityManager::toHex(const uint8_t* bytes, const size_t length) {
   static constexpr char HEX_DIGITS[] = "0123456789abcdef";
   String result;
@@ -59,13 +53,4 @@ bool SecurityManager::fromHex(const String& hex, uint8_t* output, const size_t o
     output[index] = static_cast<uint8_t>((high << 4) | low);
   }
   return true;
-}
-
-bool SecurityManager::constantTimeEquals(const String& left, const String& right) {
-  if (left.length() != right.length()) return false;
-  uint8_t difference = 0;
-  for (size_t index = 0; index < left.length(); ++index) {
-    difference |= static_cast<uint8_t>(left[index] ^ right[index]);
-  }
-  return difference == 0;
 }

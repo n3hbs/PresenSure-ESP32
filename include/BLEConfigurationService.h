@@ -7,6 +7,8 @@
 #include "SessionManager.h"
 #include "StorageManager.h"
 
+enum class BeaconState : uint8_t { Configuration, Authenticated, SessionActive };
+
 /** Exposes the authenticated GATT configuration and control interface. */
 class BLEConfigurationService {
  public:
@@ -34,26 +36,30 @@ class BLEConfigurationService {
   void publishStatus(StatusCode status, bool notify = true);
 
  private:
+  class AuthenticationCallbacks;
   class SessionCommandCallbacks;
-  class ControlCallbacks;
   class StatusCallbacks;
   class ServerCallbacks;
 
-  void queueSessionCommand(const String& json);
-  void queueControlCommand(const String& json);
-  String deviceInfoJson() const;
+  void queueAuthenticationCommand(const String& json, uint16_t connectionHandle);
+  void queueSessionCommand(const String& json, uint16_t connectionHandle);
+  void handleDisconnect(uint16_t connectionHandle);
   String statusJson(StatusCode status) const;
 
   SessionManager& sessions_;
   const StorageManager& storage_;
   NimBLEServer* server_ = nullptr;
   NimBLECharacteristic* statusCharacteristic_ = nullptr;
+  String pendingAuthenticationCommand_;
   String pendingSessionCommand_;
-  String pendingControlCommand_;
+  uint16_t pendingAuthenticationHandle_ = UINT16_MAX;
+  uint16_t pendingSessionHandle_ = UINT16_MAX;
+  uint16_t authenticatedConnectionHandle_ = UINT16_MAX;
+  volatile bool authenticationCommandPending_ = false;
   volatile bool sessionCommandPending_ = false;
-  volatile bool controlCommandPending_ = false;
+  BeaconState state_ = BeaconState::Configuration;
+  AuthenticationCallbacks* authenticationCallbacks_ = nullptr;
   SessionCommandCallbacks* sessionCommandCallbacks_ = nullptr;
-  ControlCallbacks* controlCallbacks_ = nullptr;
   StatusCallbacks* statusCallbacks_ = nullptr;
   ServerCallbacks* serverCallbacks_ = nullptr;
 };

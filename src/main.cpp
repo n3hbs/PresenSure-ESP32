@@ -13,7 +13,7 @@ namespace {
 StorageManager storage;
 SecurityManager security;
 TokenGenerator tokenGenerator(security);
-SessionManager sessionManager(storage, security);
+SessionManager sessionManager(storage);
 BLEConfigurationService configurationService(sessionManager, storage);
 BLEAdvertisingManager advertisingManager(sessionManager, storage, tokenGenerator);
 

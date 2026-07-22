@@ -21,6 +21,9 @@ class StorageManager {
 
   uint32_t roomId() const;
 
+  /** Returns the permanent room code used to validate schedules. */
+  const String& roomCode() const;
+
   bool provisioned() const;
 
   /** Returns the private device key for internal cryptographic use only. */
@@ -34,6 +37,7 @@ class StorageManager {
   String deviceId_;
   String deviceName_;
   String deviceSecret_;
+  String roomCode_;
   uint32_t roomId_ = 0;
   bool provisioned_ = false;
   bool initialized_ = false;

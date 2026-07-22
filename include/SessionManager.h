@@ -3,15 +3,14 @@
 #include <Arduino.h>
 
 #include "AppConfig.h"
-#include "SecurityManager.h"
 #include "StorageManager.h"
 
 /** Controls configuration acceptance, clock anchoring, activation, and expiry. */
 class SessionManager {
  public:
-  SessionManager(StorageManager& storage, const SecurityManager& security);
+  explicit SessionManager(StorageManager& storage);
 
-  /** Validates, signature-checks, and stages a new session in RAM. */
+  /** Validates the room and session payload, then stages it in RAM. */
   StatusCode configure(const SessionConfiguration& config);
 
   /** Activates the staged session when it is within its time range. */
@@ -43,7 +42,6 @@ class SessionManager {
   void anchorClock(uint32_t issuedAt);
 
   StorageManager& storage_;
-  const SecurityManager& security_;
   SessionConfiguration current_;
   bool hasSession_ = false;
   bool active_ = false;

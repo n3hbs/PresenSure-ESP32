@@ -4,7 +4,6 @@
 
 #include <array>
 
-#include "AppConfig.h"
 #include "Constants.h"
 #include "SecurityManager.h"
 

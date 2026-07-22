@@ -1,93 +1,76 @@
 # PresenSure ESP32 Attendance Beacon
 
-ESP32 DevKit V1 firmware for the PresenSure BLE attendance flow. Laravel owns the
-official attendance session, React Native transfers it, and the ESP32 broadcasts
-only a temporary attendance proof.
+ESP32 DevKit V1 firmware for the PresenSure BLE attendance flow. Laravel creates
+the attendance session, React Native transfers it over BLE, and the ESP32
+broadcasts a compact rotating attendance proof.
 
-## Device data
+## BLE identity
 
-Permanent NVS data:
+- Device name: `PresenSure-ComLab-A`
+- Permanent room code: `ComLab-A`
+- Service UUID: `4fafc201-1fb5-459e-8fcc-c5c9c331914b`
 
-- `device_id`
-- `device_name`
-- `room_id`
-- `device_secret`
-- `provisioned`
+Configuration advertisements include the room code as manufacturer data. The
+status characteristic also returns `room_code`, so the app can validate the
+permanent room assignment rather than trusting only the BLE name.
 
-`device_secret` is used internally for signature verification and is never exposed
-over GATT, advertised, or printed. The initial room assignment is configured with
-`DEFAULT_ROOM_ID` and `DEFAULT_ROOM_NAME` in `include/Constants.h`.
+## Characteristics
 
-Temporary session data stays in RAM and is cleared on stop, expiry, or reboot:
-
-- `session_id`
-- `session_code`
-- `token`
-- `attendance_mode`
-- `continuous_checking`
-- `issued_at`
-- `expires_at`
-- `signature`
-- active state
-
-## GATT contract
-
-All UUIDs are in `include/Constants.h`. Session and control writes require an
-encrypted BLE connection.
-
-| Characteristic | Access | Value |
+| Characteristic | UUID | Access |
 |---|---|---|
-| Device Information | Read | Public device JSON |
-| Session Command | Encrypted write with response | `START_SESSION` JSON |
-| Session Status | Read, notify | Command result JSON |
-| Control | Encrypted write | `STOP_SESSION`, `GET_STATUS`, or `CLEAR_SESSION` JSON |
+| Authentication | `beb5483e-36e1-4688-b7f5-ea07361b26a8` | Write with response |
+| Session configuration | `beb5483e-36e1-4688-b7f5-ea07361b26a9` | Write with response |
+| Device status | `beb5483e-36e1-4688-b7f5-ea07361b26aa` | Read, notify |
 
-Device Information returns:
+React Native must encode JSON as UTF-8 and then Base64 for
+`react-native-ble-plx`. The ESP32 receives the original UTF-8 JSON bytes; it must
+not Base64-decode them again.
+
+Authenticate once per BLE connection:
 
 ```json
-{
-  "device_id": "PS-1234ABCD",
-  "device_name": "PresenSure-Room-301",
-  "room_id": 12,
-  "provisioned": true,
-  "device_status": "ready"
-}
+{"command":"AUTHENTICATE","secret":"presensure"}
 ```
 
-Session Command accepts the required Laravel session proof plus optional settings:
+The development secret is intentionally temporary. Replace it with a short-lived
+Laravel configuration token before production use.
+
+After receiving `AUTHENTICATED`, send:
 
 ```json
 {
   "command": "START_SESSION",
-  "session_id": "ATT-20260721-0001",
-  "session_code": "A71F32",
-  "token": "X8A3K92M",
-  "attendance_mode": "ble_and_face",
-  "continuous_checking": true,
-  "issued_at": 1784592600,
-  "expires_at": 1784596200,
-  "signature": "64-lowercase-hex-HMAC-SHA256"
+  "session_id": "attendance-session-184",
+  "schedule_id": 25,
+  "subject_code": "IT101",
+  "room_code": "ComLab-A",
+  "token": "random-session-token",
+  "issued_at": 1784696400,
+  "expires_at": 1784700000
 }
 ```
 
-Minimum required fields are `command`, `session_id`, `token`, `expires_at`, and
-`signature`. The signed UTF-8 value is:
+Required session fields are `session_id`, `schedule_id`, `subject_code`,
+`room_code`, `token`, and `expires_at`. `issued_at` is also required on the first
+session after boot when the ESP32 clock is not yet set. Use the current Unix time
+in seconds.
 
-```text
-command|session_id|session_code|token|attendance_mode|continuous_as_0_or_1|issued_at|expires_at
-```
-
-The signature is lowercase HMAC-SHA256 hex using the device's raw 32-byte secret.
-
-Stop a session with:
+To stop an active session, reconnect, authenticate, and write this to the session
+characteristic:
 
 ```json
-{"command":"STOP_SESSION","session_id":"ATT-20260721-0001"}
+{"command":"STOP_SESSION","session_id":"attendance-session-184"}
 ```
+
+Status values include `READY`, `AUTHENTICATED`, `SESSION_STARTED`,
+`SESSION_STOPPED`, and `ERROR`. Error responses include `code` and `message`.
+React Native should subscribe to status notifications before sending commands and
+must wait for the matching success status before proceeding.
 
 ## Student advertisement
 
-The firmware sends a 23-byte manufacturer payload instead of JSON:
+During an active session, the ESP32 remains connectable for authenticated stop
+commands and broadcasts a 23-byte manufacturer payload:
 
 | Offset | Bytes | Field |
 |---:|---:|---|
@@ -95,15 +78,13 @@ The firmware sends a 23-byte manufacturer payload instead of JSON:
 | 2 | 1 | Protocol version |
 | 3 | 1 | Attendance flags |
 | 4 | 1 | Advertisement version |
-| 5 | 4 | Session short ID |
+| 5 | 4 | Session ID hash |
 | 9 | 4 | Time window (`epoch / 30`) |
 | 13 | 6 | Rotating verification token |
-| 19 | 4 | Device short ID |
+| 19 | 4 | Device ID hash |
 
-Flags use bit 0 for BLE, bit 1 for face verification, and bit 2 for continuous
-checking. The rotating proof is HMAC-SHA256 over `token|time_window`, truncated to
-six bytes. Student, instructor, course, room-name, Laravel-token, and device-secret
-data are never advertised.
+Room names, subject codes, session tokens, and device secrets are not exposed in
+active attendance advertisements.
 
 ## Build
 
